@@ -15,6 +15,12 @@ To use this early, experimental code, you'll need to install the Maven artifacts
     cd riaktor
     ./gradlew install
 
+Then use the artifacts in your build:
+
+    dependencies {
+      compile 'riaktor:riaktor:0.1.0.ALPHA1'
+    }
+
 The tests assume you have a Riak instance running locally.
 
 ### Promises
