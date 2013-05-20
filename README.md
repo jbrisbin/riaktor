@@ -45,6 +45,16 @@ You can find out when the store operation is complete by consuming on the return
 
 Nothing is hidden in `Riaktor`. There are several overrides of all the methods that allow you pass conflict resolvers, mutations and the like. You can also send a single operation (or, more efficiently, a batch of them) to Riak. If you want to use the `Bucket` object to build up an update with the appropriate W and DW settings, then you create a `StoreObject` like you normally would. It's just that instead of calling `execute()`, you would call `Riaktor.send` and schedule that operation to be run in a Dispatcher, dealing with the result that will eventually be returned in a `Promise`.
 
+    def bucket = riaktor.fetchBucket("test").await(5, SECONDS)
+
+    def op = bucket.store("test", "Hello World!".toString())
+      .w(1)
+      .dw(1)
+
+		riaktor.send(op).onSuccess({
+      // operation has completed
+    })
+
 ---
 
 Riaktor is Apache 2.0 licensed.

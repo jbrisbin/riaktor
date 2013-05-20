@@ -76,6 +76,22 @@ class RiaktorSpec extends Specification {
 
 	}
 
+	def "use Bucket to create a StoreObject"() {
+
+		given: "a test Bucket"
+		def b = await(riaktor.fetchBucket("test"), 5)
+
+		when: "a StoreObject is created"
+		def op = b.store("test", "Hello World!".toString()).w(1).dw(1)
+		def p = riaktor.send(op).onSuccess({
+			// operation has completed
+		})
+
+		then: "the operation is executed"
+		await(p, 5) == null
+
+	}
+
 	private <T> T await(Deferred<T> d, long seconds) {
 		def start = System.currentTimeMillis()
 		T result = d.await(seconds, TimeUnit.SECONDS)
