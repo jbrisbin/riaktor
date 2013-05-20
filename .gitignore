@@ -4,3 +4,8 @@
 *.jar
 *.war
 *.ear
+
+*.i*
+out
+build
+.gradle
