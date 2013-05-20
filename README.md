@@ -1,9 +1,9 @@
-### riaktor
+# Riaktor
 Riak data access using [Reactor](https://github.com/reactor/reactor/).
 
 ---
 
-Riaktor is a wrapper around the official Riak Java client that provides efficient asynchronous task execution and coordination using [Reactor](https://github.com/reactor/reactor/).
+Riaktor is a wrapper around the [official Riak Java client](https://github.com/basho/riak-java-client) that provides efficient asynchronous task execution and coordination using [Reactor](https://github.com/reactor/reactor/).
 
 It doesn't implement low-level networking. It just provides a way to execute submitted `RiakOperation<?>` instances in Reactor's efficient task dispatching mechanism. You work with `Riaktor` as you would in a "normal", blocking Java application, but rather than calling `execute()` and blocking your calling thread, you submit the operation to Riaktor to be executed in a `Dispatcher`.
 
@@ -29,7 +29,7 @@ Since Riaktor returns a `Promise`, you can use the efficient `map`, `filter`, an
 
 This example fetches a bucket and asynchronously executes a `map` function that passes the `Bucket` and expects a return value, which in this case is also a `Promise` as returned from `Riaktor.store`:
 
-		def p = riaktor.fetchBucket("test").
+    def p = riaktor.fetchBucket("test").
       map({ Bucket b ->
         riaktor.store(b, "test", data)
       }).await(5, SECONDS)
