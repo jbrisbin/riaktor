@@ -10,7 +10,7 @@ import com.basho.riak.client.operations.DeleteObject;
 import com.basho.riak.client.operations.FetchObject;
 import com.basho.riak.client.operations.RiakOperation;
 import com.basho.riak.client.operations.StoreObject;
-import com.lmax.disruptor.YieldingWaitStrategy;
+import com.lmax.disruptor.BlockingWaitStrategy;
 import com.lmax.disruptor.dsl.ProducerType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,8 +30,6 @@ import java.util.Collection;
 import java.util.Iterator;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static reactor.core.Context.rootDispatcher;
-
 /**
  * Instances of this class manage the execution of {@link RiakOperation RiakOperations} so that the user doesn't
  * directly call {@link com.basho.riak.client.operations.RiakOperation#execute()}. All operations are asynchronous and
@@ -44,6 +42,19 @@ import static reactor.core.Context.rootDispatcher;
  * @author Jon Brisbin
  */
 public class Riaktor extends Reactor {
+
+	private static final Supplier<Dispatcher> DEFAULT_DISPATCHER_SUPPLIER = new Supplier<Dispatcher>() {
+		@Override
+		public Dispatcher get() {
+			return new RingBufferDispatcher(
+					"riaktor",
+					1,
+					512,
+					ProducerType.MULTI,
+					new BlockingWaitStrategy()
+			).start();
+		}
+	};
 
 	private final Logger           log            = LoggerFactory.getLogger(Riaktor.class);
 	private final Registry<Bucket> bucketRegistry = new CachingRegistry<>(null, null);
@@ -66,17 +77,18 @@ public class Riaktor extends Reactor {
 	 * @param riakClient The {@link IRiakClient} to use.
 	 */
 	public Riaktor(IRiakClient riakClient) {
-		this(riakClient, rootDispatcher());
+		this(riakClient, DEFAULT_DISPATCHER_SUPPLIER);
 	}
 
-	public Riaktor(@Nonnull IRiakClient riakClient, @Nonnull Dispatcher customDispatcher) {
-		this(riakClient, customDispatcher, new RingBufferDispatcher(
-				"riaktor",
-				1,
-				1024,
-				ProducerType.MULTI,
-				new YieldingWaitStrategy()
-		));
+	/**
+	 * Create a {@literal Riaktor} using the given client. Create a {@link Dispatcher} using the given {@link Supplier}.
+	 *
+	 * @param riakClient       The {@link IRiakClient} to use.
+	 * @param customDispatcher The {@link Dispatcher} that event {@link Consumer Consumers} will use.
+	 */
+	public Riaktor(@Nonnull IRiakClient riakClient,
+								 @Nonnull Supplier<Dispatcher> customDispatcher) {
+		this(riakClient, customDispatcher, DEFAULT_DISPATCHER_SUPPLIER);
 	}
 
 	/**
@@ -86,10 +98,12 @@ public class Riaktor extends Reactor {
 	 * @param customDispatcher The {@link Dispatcher} that event {@link Consumer Consumers} will use.
 	 * @param ioDispatcher     The {@link Dispatcher} the {@link Reactor} responsible for IO will use.
 	 */
-	public Riaktor(@Nonnull IRiakClient riakClient, @Nonnull Dispatcher customDispatcher, @Nonnull Dispatcher ioDispatcher) {
-		super(customDispatcher);
+	public Riaktor(@Nonnull IRiakClient riakClient,
+								 @Nonnull Supplier<Dispatcher> customDispatcher,
+								 @Nonnull Supplier<Dispatcher> ioDispatcher) {
+		super(customDispatcher.get());
 		this.riakClient = riakClient;
-		this.ioReactor = new Reactor(ioDispatcher);
+		this.ioReactor = new Reactor(ioDispatcher.get());
 	}
 
 	/**

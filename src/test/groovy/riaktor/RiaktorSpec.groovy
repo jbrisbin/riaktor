@@ -83,9 +83,7 @@ class RiaktorSpec extends Specification {
 
 		when: "a StoreObject is created"
 		def op = b.store("test", "Hello World!".toString()).w(1).dw(1)
-		def p = riaktor.send(op).onSuccess({
-			// operation has completed
-		})
+		def p = riaktor.send(op)
 
 		then: "the operation is executed"
 		await(p, 5) == null
