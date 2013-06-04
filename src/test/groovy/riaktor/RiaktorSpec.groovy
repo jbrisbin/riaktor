@@ -1,7 +1,8 @@
 package riaktor
 
 import com.basho.riak.client.bucket.Bucket
-import reactor.fn.Deferred
+import reactor.core.Composable
+import reactor.core.Environment
 import spock.lang.Specification
 
 import java.util.concurrent.TimeUnit
@@ -14,10 +15,12 @@ import static org.hamcrest.Matchers.lessThan
  */
 class RiaktorSpec extends Specification {
 
+	Environment env
 	Riaktor riaktor
 
 	def setup() {
-		riaktor = new Riaktor()
+		env = new Environment()
+		riaktor = new Riaktor.Spec().using(env).dispatcher(Environment.RING_BUFFER).get()
 	}
 
 	def "Riaktor fetches buckets"() {
@@ -90,7 +93,7 @@ class RiaktorSpec extends Specification {
 
 	}
 
-	private <T> T await(Deferred<T> d, long seconds) {
+	private static <T> T await(Composable<T> d, long seconds) {
 		def start = System.currentTimeMillis()
 		T result = d.await(seconds, TimeUnit.SECONDS)
 		def end = System.currentTimeMillis()

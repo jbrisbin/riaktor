@@ -10,19 +10,26 @@ import com.basho.riak.client.operations.DeleteObject;
 import com.basho.riak.client.operations.FetchObject;
 import com.basho.riak.client.operations.RiakOperation;
 import com.basho.riak.client.operations.StoreObject;
-import com.lmax.disruptor.BlockingWaitStrategy;
-import com.lmax.disruptor.dsl.ProducerType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.Fn;
-import reactor.core.CachingRegistry;
+import reactor.P;
+import reactor.R;
+import reactor.core.ComponentSpec;
+import reactor.core.Environment;
 import reactor.core.Promise;
-import reactor.core.R;
 import reactor.core.Reactor;
-import reactor.fn.*;
+import reactor.fn.Consumer;
+import reactor.fn.Event;
+import reactor.fn.Function;
 import reactor.fn.dispatch.Dispatcher;
 import reactor.fn.dispatch.RingBufferDispatcher;
-import reactor.fn.selector.BaseSelector;
+import reactor.fn.registry.CachingRegistry;
+import reactor.fn.registry.Registration;
+import reactor.fn.registry.Registry;
+import reactor.fn.selector.ObjectSelector;
+import reactor.fn.tuples.Tuple;
+import reactor.fn.tuples.Tuple2;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -41,69 +48,29 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * @author Jon Brisbin
  */
-public class Riaktor extends Reactor {
-
-	private static final Supplier<Dispatcher> DEFAULT_DISPATCHER_SUPPLIER = new Supplier<Dispatcher>() {
-		@Override
-		public Dispatcher get() {
-			return new RingBufferDispatcher(
-					"riaktor",
-					1,
-					512,
-					ProducerType.MULTI,
-					new BlockingWaitStrategy()
-			).start();
-		}
-	};
+public class Riaktor {
 
 	private final Logger           log            = LoggerFactory.getLogger(Riaktor.class);
-	private final Registry<Bucket> bucketRegistry = new CachingRegistry<>(null, null);
+	private final Registry<Bucket> bucketRegistry = new CachingRegistry<>(null);
+	private final Environment env;
 	private final IRiakClient riakClient;
+	private final Reactor     eventsReactor;
 	private final Reactor     ioReactor;
 
 	/**
-	 * Create a {@literal Riaktor} using the default protobuf client.
+	 * Create a {@literal Riaktor} using the given client and events {@link Reactor}.
 	 *
-	 * @throws RiakException
-	 * @see {@link com.basho.riak.client.RiakFactory#pbcClient()}
+	 * @param env           The Reactor environment.
+	 * @param riakClient    The Riak client.
+	 * @param eventsReactor The Reactor to dispatch events into.
 	 */
-	public Riaktor() throws RiakException {
-		this(RiakFactory.pbcClient());
-	}
-
-	/**
-	 * Create a {@literal Riaktor} using the given client.
-	 *
-	 * @param riakClient The {@link IRiakClient} to use.
-	 */
-	public Riaktor(IRiakClient riakClient) {
-		this(riakClient, DEFAULT_DISPATCHER_SUPPLIER);
-	}
-
-	/**
-	 * Create a {@literal Riaktor} using the given client. Create a {@link Dispatcher} using the given {@link Supplier}.
-	 *
-	 * @param riakClient       The {@link IRiakClient} to use.
-	 * @param customDispatcher The {@link Dispatcher} that event {@link Consumer Consumers} will use.
-	 */
-	public Riaktor(@Nonnull IRiakClient riakClient,
-								 @Nonnull Supplier<Dispatcher> customDispatcher) {
-		this(riakClient, customDispatcher, DEFAULT_DISPATCHER_SUPPLIER);
-	}
-
-	/**
-	 * Create a {@literal Riaktor} using the given client, {@link Dispatcher} and IO {@link Dispatcher}.
-	 *
-	 * @param riakClient       The {@link IRiakClient} to use.
-	 * @param customDispatcher The {@link Dispatcher} that event {@link Consumer Consumers} will use.
-	 * @param ioDispatcher     The {@link Dispatcher} the {@link Reactor} responsible for IO will use.
-	 */
-	public Riaktor(@Nonnull IRiakClient riakClient,
-								 @Nonnull Supplier<Dispatcher> customDispatcher,
-								 @Nonnull Supplier<Dispatcher> ioDispatcher) {
-		super(customDispatcher.get());
-		this.riakClient = riakClient;
-		this.ioReactor = new Reactor(ioDispatcher.get());
+	private Riaktor(@Nullable Environment env,
+									@Nullable IRiakClient riakClient,
+									@Nonnull Reactor eventsReactor) throws RiakException {
+		this.env = (null == env ? new Environment() : env);
+		this.riakClient = (null == riakClient ? RiakFactory.pbcClient() : riakClient);
+		this.eventsReactor = eventsReactor;
+		this.ioReactor = R.reactor().using(env).dispatcher(Environment.EVENT_LOOP).get();
 	}
 
 	/**
@@ -113,18 +80,18 @@ public class Riaktor extends Reactor {
 	 * @return A {@link Promise} that will be completed after all operations have been executed on the server.
 	 */
 	public Promise<Void> send(RiakOperation<?>... ops) {
-		final Promise<Void> p = new Promise<>(this);
+		final Promise<Void> p = P.<Void>defer().using(env).using(eventsReactor).get();
 		final AtomicLong counter = new AtomicLong(ops.length);
 
 		for (final RiakOperation<?> op : ops) {
-			R.schedule(
+			Fn.schedule(
 					new Consumer<Void>() {
 						@Override
 						public void accept(Void v) {
 							try {
 								op.execute();
 							} catch (RiakException e) {
-								Riaktor.this.notify(Fn.T(e.getClass()), Fn.event(e));
+								eventsReactor.notify(e.getClass(), Event.wrap(e));
 							} finally {
 								if (counter.decrementAndGet() == 0) {
 									p.set((Void) null);
@@ -150,9 +117,9 @@ public class Riaktor extends Reactor {
 	 * @return A {@link Promise} representing the optional return value from {@link com.basho.riak.client.operations.RiakOperation#execute()}.
 	 */
 	public <T, O extends RiakOperation<T>> Promise<T> send(@Nonnull final O op) {
-		final Promise<T> p = new Promise<>(this);
+		final Promise<T> p = P.<T>defer().using(env).using(eventsReactor).get();
 
-		R.schedule(
+		Fn.schedule(
 				new Consumer<Void>() {
 					@Override
 					public void accept(Void v) {
@@ -193,11 +160,11 @@ public class Riaktor extends Reactor {
 	 * @return A {@link Promise} that will be completed when the {@link Bucket} is available.
 	 */
 	public Promise<Bucket> fetchBucket(@Nonnull final String name, final boolean refresh) {
-		final Promise<Bucket> p = new Promise<>(this);
+		final Promise<Bucket> p = P.<Bucket>defer().using(env).using(eventsReactor).get();
 
 		Iterator<Registration<? extends Bucket>> buckets = bucketRegistry.select(name).iterator();
 		if (refresh || !buckets.hasNext()) {
-			R.schedule(
+			Fn.schedule(
 					new Consumer<Void>() {
 						@Override
 						public void accept(Void v) {
@@ -280,9 +247,9 @@ public class Riaktor extends Reactor {
 															@Nullable final Function<Collection<T>, T> conflictResolver,
 															@Nullable final Converter<T> converter,
 															@Nullable final Mutation<T> mutation) {
-		final Promise<T> p = new Promise<>(this);
+		final Promise<T> p = P.<T>defer().using(env).using(eventsReactor).get();
 
-		R.schedule(
+		Fn.schedule(
 				new Consumer<Void>() {
 					@Override
 					public void accept(Void v) {
@@ -311,7 +278,7 @@ public class Riaktor extends Reactor {
 										@Override
 										public T resolve(Collection<T> siblings) {
 											T result = conflictResolver.apply(siblings);
-											Riaktor.this.notify("/" + bucket.getName() + "/" + key, new MergeEvent<T>(Tuple.of(siblings, result)));
+											eventsReactor.notify("/" + bucket.getName() + "/" + key, new MergeEvent<T>(Tuple.of(siblings, result)));
 											return result;
 										}
 									}
@@ -329,7 +296,7 @@ public class Riaktor extends Reactor {
 							if (log.isTraceEnabled()) {
 								log.trace("/{}/{} stored: {}", bucket.getName(), key, result);
 							}
-							Riaktor.this.notify("/" + bucket.getName() + "/" + key, new StoreEvent<>(result));
+							eventsReactor.notify("/" + bucket.getName() + "/" + key, new StoreEvent<>(result));
 
 							p.set(result);
 						} catch (RiakRetryFailedException e) {
@@ -407,9 +374,9 @@ public class Riaktor extends Reactor {
 															@Nullable final Class<T> asType,
 															@Nullable final Function<Collection<T>, T> conflictResolver,
 															@Nullable final Converter<T> converter) {
-		final Promise<T> p = new Promise<>(this);
+		final Promise<T> p = P.<T>defer().using(env).using(eventsReactor).get();
 
-		R.schedule(
+		Fn.schedule(
 				new Consumer<Void>() {
 					@Override
 					public void accept(Void v) {
@@ -425,7 +392,7 @@ public class Riaktor extends Reactor {
 										@Override
 										public T resolve(Collection<T> siblings) {
 											T result = conflictResolver.apply(siblings);
-											Riaktor.this.notify("/" + bucket.getName() + "/" + key, new MergeEvent<T>(Tuple.of(siblings, result)));
+											eventsReactor.notify("/" + bucket.getName() + "/" + key, new MergeEvent<T>(Tuple.of(siblings, result)));
 											return result;
 										}
 									}
@@ -478,9 +445,9 @@ public class Riaktor extends Reactor {
 	 * @return A {@link Promise} that will be completed when the value has been deleted.
 	 */
 	public Promise<Void> delete(final Bucket bucket, final String key, final Retrier retrier) {
-		final Promise<Void> p = new Promise<>(this);
+		final Promise<Void> p = P.<Void>defer().using(env).using(eventsReactor).get();
 
-		R.schedule(
+		Fn.schedule(
 				new Consumer<Void>() {
 					@Override
 					public void accept(Void v) {
@@ -493,7 +460,7 @@ public class Riaktor extends Reactor {
 							if (log.isTraceEnabled()) {
 								log.trace("deleted: /{}/{}", bucket.getName(), key);
 							}
-							Riaktor.this.notify("/" + bucket.getName() + "/" + key, new DeleteEvent(Tuple.of(bucket, key)));
+							eventsReactor.notify("/" + bucket.getName() + "/" + key, new DeleteEvent(Tuple.of(bucket, key)));
 							p.set(result);
 						} catch (RiakException e) {
 							p.set(e);
@@ -507,7 +474,7 @@ public class Riaktor extends Reactor {
 		return p;
 	}
 
-	private static class BucketSelector extends BaseSelector<Bucket> {
+	private static class BucketSelector extends ObjectSelector<Bucket> {
 		public BucketSelector(Bucket bucket) {
 			super(bucket);
 		}
@@ -553,6 +520,24 @@ public class Riaktor extends Reactor {
 	public class DeleteEvent extends Event<Tuple2<Bucket, String>> {
 		public DeleteEvent(Tuple2<Bucket, String> data) {
 			super(data);
+		}
+	}
+
+	public static class Spec extends ComponentSpec<Spec, Riaktor> {
+		private IRiakClient riakClient;
+
+		public Spec using(IRiakClient riakClient) {
+			this.riakClient = riakClient;
+			return this;
+		}
+
+		@Override
+		protected Riaktor configure(Reactor reactor) {
+			try {
+				return new Riaktor(env, riakClient, reactor);
+			} catch (RiakException e) {
+				throw new IllegalStateException(e);
+			}
 		}
 	}
 
