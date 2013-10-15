@@ -24,15 +24,11 @@
     </encoder>
   </appender>
 
-  <appender name="async" class="reactor.logback.AsyncAppender">
-    <appender-ref ref="stdout"/>
-  </appender>
-
   <logger name="org.apache" level="warn"/>
-  <logger name="riaktor" level="debug"/>
+  <logger name="com.jbrisbin.riaktor" level="debug"/>
 
   <root level="info">
-    <appender-ref ref="async"/>
+    <appender-ref ref="stdout"/>
   </root>
 
 </configuration>
