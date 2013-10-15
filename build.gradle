@@ -104,6 +104,7 @@ test {
 	systemProperty("java.awt.headless", "true")
 	systemProperty("testGroups", project.properties.get("testGroups"))
 	scanForTestClasses = false
+	include '**/*Spec.*'
 	include '**/*Tests.*'
 	exclude '**/*Abstract*.*'
 }
