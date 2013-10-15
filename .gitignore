@@ -1,10 +1,4 @@
 *.class
-
-# Package Files #
-*.jar
-*.war
-*.ear
-
 *.i*
 out
 build
