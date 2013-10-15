@@ -1,5 +1,7 @@
 package com.jbrisbin.riaktor
 
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 import reactor.core.Environment
 import reactor.core.composable.Promise
 import reactor.function.Suppliers
@@ -12,6 +14,8 @@ import static org.hamcrest.Matchers.is
  * @author Jon Brisbin
  */
 class RiaktorSpec extends Specification {
+
+	static Logger LOG = LoggerFactory.getLogger(RiaktorSpec)
 
 	Environment env
 	Riaktor riaktor
@@ -38,7 +42,7 @@ class RiaktorSpec extends Specification {
 					returnBody(true).
 					commit().
 					await()
-			println "entry[1]: $e1"
+			LOG.info "entry[1]: $e1"
 			vclock = e1.headers.getVclock()
 
 		then:
@@ -53,7 +57,7 @@ class RiaktorSpec extends Specification {
 					returnBody(true).
 					commit().
 					await()
-			println "entry[2]: $e2"
+			LOG.info "entry[2]: $e2"
 
 		then:
 			'the object is modifed'
@@ -64,7 +68,7 @@ class RiaktorSpec extends Specification {
 			def e3 = riaktor.get("test", e1.key, Person).
 					commit().
 					await()
-			println "entry[3]: $e3"
+			LOG.info "entry[3]: $e3"
 
 		then:
 			'the data is correct'
@@ -98,7 +102,7 @@ class RiaktorSpec extends Specification {
 			}
 			end = System.currentTimeMillis()
 			elapsed = end - start
-			println "throughput: ${Math.floor(runs / (elapsed / 1000))}/s"
+			LOG.info "throughput: ${Math.floor(runs / (elapsed / 1000))}/s"
 
 		then:
 			(runs / (elapsed / 1000)) > 1000
