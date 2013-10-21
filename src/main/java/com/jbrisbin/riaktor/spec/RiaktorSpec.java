@@ -2,6 +2,7 @@ package com.jbrisbin.riaktor.spec;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.module.afterburner.AfterburnerModule;
 import com.jbrisbin.riaktor.Riaktor;
 import com.jbrisbin.riaktor.convert.ObjectMapperConverter;
 import reactor.convert.Converter;
@@ -55,6 +56,7 @@ public class RiaktorSpec extends EventRoutingComponentSpec<RiaktorSpec, Riaktor>
 			ObjectMapper mapper = new ObjectMapper();
 			mapper.disable(SerializationFeature.FAIL_ON_EMPTY_BEANS);
 			mapper.enable(SerializationFeature.INDENT_OUTPUT);
+			mapper.registerModule(new AfterburnerModule());
 			converters.put("application/json", new ObjectMapperConverter(mapper));
 		}
 

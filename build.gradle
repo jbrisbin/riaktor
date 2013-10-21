@@ -138,7 +138,8 @@ dependencies {
 	compile "com.basho.riak.protobuf:riak-pb:$riakPbVersion"
 
 	// Jackson
-	compile "com.fasterxml.jackson.core:jackson-databind:$jacksonVersion"
+	compile "com.fasterxml.jackson.core:jackson-databind:$jacksonVersion",
+			"com.fasterxml.jackson.module:jackson-module-afterburner:$jacksonVersion"
 
 	// Libraries
 	compile "commons-codec:commons-codec:1.8"

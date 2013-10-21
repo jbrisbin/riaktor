@@ -1,10 +1,7 @@
 package com.jbrisbin.riaktor.op;
 
-import com.jbrisbin.riaktor.Entry;
-import com.jbrisbin.riaktor.event.RiakEvent;
 import com.jbrisbin.riaktor.spec.QuorumSpec;
 import reactor.core.composable.Composable;
-import reactor.event.Event;
 import reactor.function.Function;
 
 import java.util.List;
@@ -14,11 +11,9 @@ import java.util.List;
  *
  * @author Jon Brisbin
  */
-public abstract class Operation<T, C extends Composable<Entry<T>>> {
+public abstract class Operation<T, C extends Composable<T>> {
 
 	private QuorumSpec           qSpec;
-	private Function<List<T>, T> conflictResolver;
-	private String               etag;
 
 	/**
 	 * Set the {@link QuorumSpec} to define what quorum values should be used during this request.
@@ -39,49 +34,6 @@ public abstract class Operation<T, C extends Composable<Entry<T>>> {
 	 */
 	public QuorumSpec quorum() {
 		return qSpec;
-	}
-
-	/**
-	 * Set the conflict resolver to use to resolve sibling conflicts.
-	 *
-	 * @param conflictResolver
-	 *
-	 * @return {@literal this}
-	 */
-	public Operation<T, C> conflictResolver(Function<List<T>, T> conflictResolver) {
-		this.conflictResolver = conflictResolver;
-		return this;
-	}
-
-	/**
-	 * Get the conflict resolver to use to resolve sibling conflicts.
-	 *
-	 * @return the conflict resolver to use.
-	 */
-	public Function<List<T>, T> conflictResolver() {
-		return conflictResolver;
-	}
-
-	/**
-	 * Specify an entity tag for operations that use If-None-Match semantics.
-	 *
-	 * @param etag
-	 * 		the entity tag to use
-	 *
-	 * @return {@literal this}
-	 */
-	public Operation<T, C> ifNoneMatch(String etag) {
-		this.etag = etag;
-		return this;
-	}
-
-	/**
-	 * Get the entity tag for operations that use If-None-Match semantics.
-	 *
-	 * @return the entity tag to use
-	 */
-	public String ifNoneMatch() {
-		return etag;
 	}
 
 	/**

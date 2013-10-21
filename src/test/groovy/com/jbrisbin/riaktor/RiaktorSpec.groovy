@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory
 import reactor.core.Environment
 import reactor.core.composable.Promise
 import reactor.function.Suppliers
+import reactor.queue.BlockingQueueFactory
 import spock.lang.Specification
 import spock.lang.Timeout
 
@@ -26,7 +27,13 @@ class RiaktorSpec extends Specification {
 	}
 
 	Riaktor connect() {
-		new com.jbrisbin.riaktor.spec.RiaktorSpec().env(env).get().start().await()
+		new com.jbrisbin.riaktor.spec.RiaktorSpec().
+				env(env).
+				dispatcher(Environment.RING_BUFFER).
+				connect("localhost").
+				get().
+				start().
+				await()
 	}
 
 	@Timeout(60)
@@ -37,7 +44,7 @@ class RiaktorSpec extends Specification {
 
 		when:
 			'an object is created'
-			def e1 = riaktor.put("test", null, new Person(name: "John Doe")).
+			def e1 = riaktor.put("test", "person", new Person(name: "John Doe")).
 					metadata("test", "value").
 					returnBody(true).
 					commit().
@@ -81,31 +88,52 @@ class RiaktorSpec extends Specification {
 	def "performs well"() {
 
 		given:
-			def riaktors = Suppliers.roundRobin(connect(), connect())
+			def riaktors = Suppliers.roundRobin(
+					connect(),
+					connect(),
+					connect(),
+					connect()
+			)
 
 			def runs = 10000
-			def entry = riaktor.put("test", null, new Person(name: "John Doe")).
+			riaktor.put("test", "person", new Person(name: "John Doe")).
 					metadata("test", "value").
 					commit().
 					await()
 			long start = System.currentTimeMillis();
 			long end
 			double elapsed
-			List<Promise<Entry<Person>>> promises = []
+			Queue<Promise<Entry<Person>>> promises = BlockingQueueFactory.createQueue()
 
 		when:
 			(1..runs).each {
-				promises << riaktors.get().get("test", entry.key, Person).commit()
+				promises.add(riaktors.get().get("test", "person", Person).commit())
 			}
-			promises.each {
-				assertThat("Metadata was extracted", it.await().headers["test"], is("value"))
+			while (promises.peek()) {
+				assertThat(
+						"Metadata was extracted",
+						promises.remove().await().headers["test"],
+						is("value")
+				)
 			}
 			end = System.currentTimeMillis()
 			elapsed = end - start
 			LOG.info "throughput: ${Math.floor(runs / (elapsed / 1000))}/s"
 
 		then:
-			(runs / (elapsed / 1000)) > 1000
+			(runs / (elapsed / 1000)) > 500
+
+	}
+
+	@Timeout(60)
+	def "lists keys in bucket"() {
+
+		when:
+			def keys = riaktor.listKeys("test").commit().await()
+
+		then:
+			keys == ["person"]
+
 	}
 
 }

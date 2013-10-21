@@ -2,6 +2,7 @@ package com.jbrisbin.riaktor.convert;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.type.SimpleType;
+import com.fasterxml.jackson.module.afterburner.AfterburnerModule;
 import reactor.convert.Converter;
 
 import java.io.IOException;
@@ -19,6 +20,7 @@ public class ObjectMapperConverter implements Converter {
 
 	public ObjectMapperConverter(ObjectMapper mapper) {
 		this.mapper = mapper;
+		this.mapper.registerModule(new AfterburnerModule());
 	}
 
 	@Override

@@ -7,7 +7,9 @@ import com.google.protobuf.Message;
 import com.jbrisbin.riaktor.encoding.RpbCodec;
 import com.jbrisbin.riaktor.event.EventType;
 import com.jbrisbin.riaktor.event.RiakEvent;
+import com.jbrisbin.riaktor.op.DeleteOperation;
 import com.jbrisbin.riaktor.op.GetOperation;
+import com.jbrisbin.riaktor.op.ListKeysOperation;
 import com.jbrisbin.riaktor.op.PutOperation;
 import com.jbrisbin.riaktor.spec.QuorumSpec;
 import com.jbrisbin.riaktor.support.TypeMeta;
@@ -18,7 +20,9 @@ import reactor.core.Environment;
 import reactor.core.Reactor;
 import reactor.core.composable.Deferred;
 import reactor.core.composable.Promise;
+import reactor.core.composable.Stream;
 import reactor.core.composable.spec.Promises;
+import reactor.core.composable.spec.Streams;
 import reactor.event.Event;
 import reactor.event.dispatch.Dispatcher;
 import reactor.event.registry.Registration;
@@ -128,7 +132,12 @@ public class Riaktor implements Closeable {
 			reconnect = new Reconnect() {
 				@Override
 				public Tuple2<InetSocketAddress, Long> reconnect(InetSocketAddress currentAddress, int attempt) {
-					return Tuple.of(addresses.get(attempt % len), (long)Riaktor.this.timeout);
+					InetSocketAddress nextAddr = addresses.get(attempt % len);
+					long timeout = (attempt == 0 ? 0 : (long)Riaktor.this.timeout);
+					if(LOG.isInfoEnabled()) {
+						LOG.info("Reconnecting to {} after {}", nextAddr, (attempt == 0 ? 0 : (long)Riaktor.this.timeout));
+					}
+					return Tuple.of(nextAddr, timeout);
 				}
 			};
 		}
@@ -141,7 +150,7 @@ public class Riaktor implements Closeable {
 
 		client = new TcpClientSpec<Message, RiakEvent<Message>>(NettyTcpClient.class)
 				.env(env)
-				.synchronousDispatcher()
+				.dispatcher(dispatcher)
 				.codec(new LengthFieldCodec<>(new RpbCodec()))
 				.options(new ClientSocketOptions().timeout(timeout))
 				.connect(connectAddr)
@@ -158,6 +167,24 @@ public class Riaktor implements Closeable {
 			throw new IllegalStateException("This Riaktor has already been started.");
 		}
 
+		final Consumer<Message> msgConsumer = new Consumer<Message>() {
+			@SuppressWarnings("unchecked")
+			@Override
+			public void accept(Message msg) {
+				if(null == responseQueue.peek()) {
+					return;
+				}
+
+				Deferred d = responseQueue.remove();
+				if(msg instanceof RiakPB.RpbErrorResp) {
+					d.accept(new IllegalStateException(((RiakPB.RpbErrorResp)msg).getErrmsg()
+					                                                             .toStringUtf8()));
+				} else {
+					d.accept(msg);
+				}
+			}
+		};
+
 		if(null == reconnect) {
 			return client.open()
 			             .onError(new Consumer<Throwable>() {
@@ -168,7 +195,7 @@ public class Riaktor implements Closeable {
 			             })
 			             .onSuccess(new Consumer<TcpConnection<Message, RiakEvent<Message>>>() {
 				             @Override
-				             public void accept(TcpConnection<Message, RiakEvent<Message>> conn) {
+				             public void accept(final TcpConnection<Message, RiakEvent<Message>> conn) {
 					             synchronized(client) {
 						             Riaktor.this.connection = conn;
 						             client.notifyAll();
@@ -182,25 +209,12 @@ public class Riaktor implements Closeable {
 							             synchronized(client) {
 								             Riaktor.this.connection = null;
 							             }
-						             }
-					             });
-					             conn.consume(new Consumer<Message>() {
-						             @SuppressWarnings("unchecked")
-						             @Override
-						             public void accept(Message msg) {
-							             if(null == responseQueue.peek()) {
-								             return;
-							             }
-
-							             Deferred d = responseQueue.remove();
-							             if(msg instanceof RiakPB.RpbErrorResp) {
-								             d.accept(new IllegalStateException(((RiakPB.RpbErrorResp)msg).getErrmsg()
-								                                                                          .toStringUtf8()));
-							             } else {
-								             d.accept(msg);
+							             if(LOG.isDebugEnabled()) {
+								             LOG.debug("Connection closed {}", conn);
 							             }
 						             }
 					             });
+					             conn.consume(msgConsumer);
 				             }
 			             })
 			             .map(new Function<TcpConnection<Message, RiakEvent<Message>>, Riaktor>() {
@@ -221,6 +235,17 @@ public class Riaktor implements Closeable {
 						      Riaktor.this.connection = conn;
 						      client.notifyAll();
 					      }
+
+					      conn.on().close(new Runnable() {
+						      @Override
+						      public void run() {
+							      synchronized(client) {
+								      Riaktor.this.connection = null;
+							      }
+						      }
+					      });
+					      conn.consume(msgConsumer);
+
 					      d.accept(conn);
 
 					      drainRequestQueue();
@@ -237,15 +262,16 @@ public class Riaktor implements Closeable {
 	}
 
 	@SuppressWarnings("unchecked")
-	public <T> PutOperation<T, Promise<Entry<T>>> put(final String bucket,
-	                                                  final String key,
-	                                                  final T obj) {
+	public <T> PutOperation<T> put(final String bucket,
+	                               final String key,
+	                               final T obj) {
 		Assert.notNull(bucket, "Bucket cannot be null.");
 		Assert.notNull(obj, "Object cannot be null.");
 
 		final Class<T> type = (Class<T>)obj.getClass();
 		final Deferred<RiakKvPB.RpbPutResp, Promise<RiakKvPB.RpbPutResp>> d = promise();
 		final RiakKvPB.RpbPutReq.Builder b = RiakKvPB.RpbPutReq.newBuilder()
+		                                             .setTimeout(timeout)
 		                                             .setBucket(ByteString.copyFromUtf8(bucket));
 		if(null != key) {
 			b.setKey(ByteString.copyFromUtf8(key));
@@ -254,7 +280,7 @@ public class Riaktor implements Closeable {
 		final TypeMeta typeMeta = TypeMeta.fromType(obj.getClass());
 		final byte[] vclock = typeMeta.vclockSupplier(obj).get();
 
-		return new PutOperation<T, Promise<Entry<T>>>() {
+		return new PutOperation<T>() {
 			@Override
 			public Promise<Entry<T>> commit() {
 				if(!returnBody()) {
@@ -271,6 +297,9 @@ public class Riaktor implements Closeable {
 					}
 					if(q.hasDw()) {
 						b.setDw(q.dw());
+					}
+					if(q.hasPw()) {
+						b.setPw(q.pw());
 					}
 					if(q.hasNval()) {
 						b.setNVal(q.nval());
@@ -332,7 +361,7 @@ public class Riaktor implements Closeable {
 						return new ResponseMapFunction<RiakKvPB.RpbPutResp, T>(
 								rpbPutResp.getContentList(),
 								type,
-								conflictResolver(),
+								null,
 								rpbPutResp.getVclock().toByteArray(),
 								bucket,
 								skey
@@ -343,18 +372,19 @@ public class Riaktor implements Closeable {
 		};
 	}
 
-	public <T> GetOperation<T, Promise<Entry<T>>> get(final String bucket,
-	                                                  final String key,
-	                                                  final Class<T> asType) {
+	public <T> GetOperation<T> get(final String bucket,
+	                               final String key,
+	                               final Class<T> asType) {
 		Assert.notNull(bucket, "Bucket cannot be null.");
 		Assert.notNull(key, "Key cannot be null.");
 
 		final Deferred<RiakKvPB.RpbGetResp, Promise<RiakKvPB.RpbGetResp>> d = promise();
 		final RiakKvPB.RpbGetReq.Builder b = RiakKvPB.RpbGetReq.newBuilder()
+		                                             .setTimeout(timeout)
 		                                             .setBucket(ByteString.copyFromUtf8(bucket))
 		                                             .setKey(ByteString.copyFromUtf8(key));
 
-		return new GetOperation<T, Promise<Entry<T>>>() {
+		return new GetOperation<T>() {
 			@Override
 			public Promise<Entry<T>> commit() {
 				QuorumSpec q = quorum();
@@ -390,6 +420,84 @@ public class Riaktor implements Closeable {
 		};
 	}
 
+	public DeleteOperation delete(final String bucket,
+	                              final String key) {
+		Assert.notNull(bucket, "Bucket cannot be null.");
+		Assert.notNull(key, "Key cannot be null.");
+
+		final Deferred<Message, Promise<Message>> d = promise();
+		final RiakKvPB.RpbDelReq.Builder b = RiakKvPB.RpbDelReq.newBuilder()
+		                                             .setTimeout(timeout)
+		                                             .setBucket(ByteString.copyFromUtf8(bucket))
+		                                             .setKey(ByteString.copyFromUtf8(key));
+
+		return new DeleteOperation() {
+			@Override
+			public Promise<Void> commit() {
+				QuorumSpec q = quorum();
+				if(null != q) {
+					if(q.hasW()) {
+						b.setW(q.w());
+					}
+					if(q.hasDw()) {
+						b.setDw(q.dw());
+					}
+					if(q.hasR()) {
+						b.setR(q.r());
+					}
+					if(q.hasRw()) {
+						b.setRw(q.rw());
+					}
+					if(q.hasPr()) {
+						b.setPr(q.pr());
+					}
+					if(q.hasPw()) {
+						b.setPw(q.pw());
+					}
+					if(q.hasNval()) {
+						b.setNVal(q.nval());
+					}
+				}
+
+				request(d, new RiakEvent<>(b.build(), EventType.DelReq));
+
+				return d.compose().map(new Function<Message, Void>() {
+					@Override
+					public Void apply(Message msg) {
+						return null;
+					}
+				});
+			}
+		};
+	}
+
+	public ListKeysOperation listKeys(final String bucket) {
+		Assert.notNull(bucket, "Bucket cannot be null.");
+
+		final Deferred<RiakKvPB.RpbListKeysResp, Promise<RiakKvPB.RpbListKeysResp>> d = promise();
+		final RiakKvPB.RpbListKeysReq.Builder b = RiakKvPB.RpbListKeysReq.newBuilder()
+		                                                  .setTimeout(timeout)
+		                                                  .setBucket(ByteString.copyFromUtf8(bucket));
+
+		return new ListKeysOperation() {
+			@Override
+			public Promise<List<String>> commit() {
+				request(d, new RiakEvent<>(b.build(), EventType.ListKeysReq));
+
+				return d.compose().map(new Function<RiakKvPB.RpbListKeysResp, List<String>>() {
+					@Override
+					public List<String> apply(RiakKvPB.RpbListKeysResp rpbListKeysResp) {
+						List<String> l = new ArrayList<>();
+						for(ByteString byteString : rpbListKeysResp.getKeysList()) {
+							l.add(byteString.toStringUtf8());
+						}
+						return l;
+					}
+				});
+			}
+		};
+	}
+
 	@Override
 	public void close() throws IOException {
 		if(null != client) {
@@ -397,9 +505,12 @@ public class Riaktor implements Closeable {
 		}
 	}
 
-
 	private <T> Deferred<T, Promise<T>> promise() {
-		return Promises.<T>defer().env(env).dispatcher(dispatcher).get();
+		return Promises.<T>defer().env(env).synchronousDispatcher().get();
+	}
+
+	private <T> Deferred<T, Stream<T>> stream() {
+		return Streams.<T>defer().env(env).synchronousDispatcher().get();
 	}
 
 	private void request(Deferred d, RiakEvent ev) {
@@ -412,14 +523,9 @@ public class Riaktor implements Closeable {
 				connection.send(ev);
 			} else {
 				if(LOG.isWarnEnabled()) {
-					LOG.warn("Connection not established. Queueing request for {}ms", timeout);
+					LOG.warn("Connection not established. Queueing request.");
 				}
 				requestQueue.add(ev);
-				try {
-					client.wait(timeout);
-				} catch(InterruptedException e) {
-					Thread.currentThread().interrupt();
-				}
 			}
 		}
 	}
